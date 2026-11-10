@@ -1,56 +1,27 @@
-# Tauri unter Debian 13 installieren und ausprobieren
+# Bankiva Desktop (Tauri)
 
-## 1. Systempakete installieren
+Die Tauri-App zeigt die in der Projektdatei `.env` konfigurierte Bankiva-Webseite in einem nativen WebView-Fenster. Sie verwendet `APP_URL` (zum Beispiel `APP_URL=https://app4.bankiva.de`). Die Variable wird beim Paketbau aus der `.env` im Repository-Stamm gelesen und in die App eingebettet. Änderungen an `APP_URL` erfordern daher einen erneuten Build.
 
-```bash
-sudo apt update
-sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file \
-  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-```
+Pro Betriebssystem wird genau ein Paket erstellt: Linux als AppImage, macOS als DMG und Windows als NSIS-EXE. Das AppImage bündelt die App, benötigt aber weiterhin die passenden WebKitGTK-/GTK-Laufzeitbibliotheken des Linux-Systems. macOS stellt WebKit mit dem Betriebssystem bereit. Unter Windows wird die WebView2-Laufzeit benötigt; der NSIS-Installer verwendet den kleinen WebView2-Bootstrapper und lädt die Laufzeit bei Bedarf aus dem Internet.
 
-Diese Pakete stellen WebKitGTK und die Build-Werkzeuge bereit, die Tauri für Linux benötigt.
+## Lokal bauen
 
-## 2. Rust und Node.js bereitstellen
-
-Prüfe zuerst, ob die Werkzeuge bereits installiert sind:
+Im Verzeichnis `tauri/linux/bankiva-app`:
 
 ```bash
-rustc --version
-cargo --version
-node --version
-npm --version
+npm ci
+npm run tauri build
 ```
 
-Falls Rust fehlt, installiere es mit `rustup`:
+Tauri erzeugt das Paket im jeweiligen Plattform-Bundle-Verzeichnis unter `src-tauri/target/release/bundle/`. Linux benötigt zum Bauen zusätzlich WebKitGTK 4.1 und die in der [Tauri-Linux-Dokumentation](https://tauri.app/start/prerequisites/#linux) genannten Build-Abhängigkeiten. macOS- und Windows-Pakete müssen auf macOS beziehungsweise Windows gebaut werden.
+
+Der Standardbuild erzeugt das Linux-AppImage. Auf macOS und Windows das Format explizit wählen:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+npm run tauri build -- --bundles dmg   # macOS: einzelnes .dmg
+npm run tauri build -- --bundles nsis  # Windows: einzelne .exe
 ```
 
-Danach das Terminal neu öffnen oder die Umgebungsdateien laden. Für Node.js wird eine aktuelle Version benötigt.
+## Builds für alle Plattformen
 
-## 3. Beispiel-App erstellen und starten
-
-```bash
-npm create tauri-app@latest
-```
-
-Im Assistenten kannst du zum Beispiel **Vanilla** als Frontend wählen. Anschließend:
-
-```bash
-cd tauri-app
-npm install
-npm run tauri dev
-```
-
-Das sollte ein eigenes App-Fenster öffnen.
-
-## 4. Eigene Webseite einbinden
-
-Zum schnellen Ausprobieren kannst du in `src-tauri/tauri.conf.json` unter `build.frontendDist` die URL deiner Website eintragen. Dann lädt die App diese Adresse. Die Website muss online erreichbar sein.
-
-Für eine verteilbare App ist es meist besser, die gebauten Webseitendateien in die App einzupacken.
-
-## Hinweis zum Bauen für andere Linux-Systeme
-
-Tauri empfiehlt, Linux-Pakete auf der ältesten Linux-Version zu bauen, die du unterstützen möchtest. So lassen sich Probleme mit unterschiedlichen Systembibliotheken vermeiden.
+Der manuelle GitHub Actions Workflow `Tauri Desktop Builds` baut Linux, macOS und Windows separat. Beim Start des Workflows ist `APP_URL` als Eingabe anzugeben; diese URL wird in die drei Pakete eingebettet. Die erzeugten AppImage-, DMG- und EXE-Dateien stehen als Workflow-Artefakte bereit.
