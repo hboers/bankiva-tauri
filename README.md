@@ -28,4 +28,12 @@ CARGO_TARGET_DIR=../../build/windows cargo tauri build --bundles nsis  # Windows
 
 ## Builds für alle Plattformen
 
-Der manuelle GitHub Actions Workflow `Tauri Desktop Builds` baut Linux, macOS und Windows separat. Beim Start des Workflows ist `APP_URL` als Eingabe anzugeben; diese URL wird in die drei Pakete eingebettet. Die erzeugten AppImage-, DMG- und EXE-Dateien stehen als Workflow-Artefakte bereit.
+Der manuelle GitHub Actions Workflow `Tauri Desktop Builds` baut standardmäßig Linux, macOS und Windows separat. Beim Start des Workflows ist `APP_URL` als Eingabe anzugeben; diese URL wird in die Pakete eingebettet. Die erzeugten AppImage-, DMG- und EXE-Dateien stehen als Workflow-Artefakte bereit.
+
+Mit `bin/build.sh` lassen sich einzelne Plattformen auswählen. Das Script liest `APP_URL` aus `.env`, startet den Workflow auf dem aktuellen Git-Branch, wartet auf den Abschluss und lädt die Pakete nach `install/<workflow-run-id>/` herunter. Der Branch samt Workflow-Änderungen muss auf GitHub verfügbar sein. Voraussetzung sind eine gültige `gh`-Anmeldung (`gh auth login`) und eine `.env` mit gültiger `APP_URL`.
+
+```bash
+bin/build.sh linux
+bin/build.sh windows macos
+bin/build.sh --help
+```

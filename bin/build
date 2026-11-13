@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Startet den GitHub Actions Build für die angegebenen Betriebssysteme und lädt
+die erzeugten Pakete nach install/<workflow-run-id>/ herunter.
+
+Aufruf:
+  bin/build.sh <windows|linux|macos> [<windows|linux|macos> ...]
+
+Beispiele:
+  bin/build.sh linux
+  bin/build.sh windows macos
+EOF
+}
+
+if (($# == 0)); then
+  usage
+  exit 0
+fi
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT_DIR"
+
+platforms=()
+for platform in "$@"; do
+  case "$platform" in
+    windows|linux|macos) ;;
+    *) printf 'Unbekanntes Betriebssystem: %s\n\n' "$platform" >&2; usage >&2; exit 2 ;;
+  esac
+  already_selected=false
+  for selected_platform in "${platforms[@]}"; do
+    if [[ $selected_platform == "$platform" ]]; then
+      already_selected=true
+      break
+    fi
+  done
+  if [[ $already_selected == false ]]; then
+    platforms+=("$platform")
+  fi
+done
+
+for command_name in gh git; do
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'Benötigtes Programm nicht gefunden: %s\n' "$command_name" >&2
+    exit 1
+  fi
+done
+
+if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+  printf 'Keine gültige gh-Anmeldung. Bitte zuerst „gh auth login“ ausführen.\n' >&2
+  exit 1
+fi
+
+if [[ ! -f .env ]]; then
+  printf 'Datei .env fehlt. Bitte APP_URL darin setzen (siehe dotenv.example).\n' >&2
+  exit 1
+fi
+
+app_url=$(awk -F= '$1 == "APP_URL" { sub(/^[^=]*=/, ""); print; exit }' .env)
+app_url=${app_url%$'\r'}
+if [[ ! $app_url =~ ^https?://[^[:space:]]+$ ]]; then
+  printf 'APP_URL fehlt oder ist ungültig in .env.\n' >&2
+  exit 1
+fi
+
+branch=$(git branch --show-current)
+if [[ -z $branch ]]; then
+  printf 'Kein Git-Branch ausgecheckt; der GitHub-Workflow benötigt einen Branch.\n' >&2
+  exit 1
+fi
+
+platforms_json='['
+for platform in "${platforms[@]}"; do
+  [[ $platforms_json == '[' ]] || platforms_json+=','
+  platforms_json+="\"$platform\""
+done
+platforms_json+=']'
+
+request_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+run_name="Tauri desktop build $request_id"
+workflow_file='.github/workflows/tauri-desktop.yml'
+
+printf 'Starte GitHub Build für: %s\n' "${platforms[*]}"
+gh workflow run "$workflow_file" \
+  --ref "$branch" \
+  -f "app_url=$app_url" \
+  -f "platforms=$platforms_json" \
+  -f "request_id=$request_id"
+
+printf 'Warte auf den Workflow-Lauf …\n'
+run_id=''
+for _ in {1..60}; do
+  run_id=$(gh run list \
+    --workflow "$workflow_file" \
+    --limit 50 \
+    --json databaseId,displayTitle \
+    --jq ".[] | select(.displayTitle == \"$run_name\") | .databaseId" | head -n 1)
+  [[ -n $run_id ]] && break
+  sleep 5
+done
+
+if [[ -z $run_id ]]; then
+  printf 'Der gestartete Workflow-Lauf wurde nicht gefunden.\n' >&2
+  exit 1
+fi
+
+gh run watch "$run_id" --exit-status
+
+destination="$ROOT_DIR/install/$run_id"
+mkdir -p "$destination"
+for platform in "${platforms[@]}"; do
+  gh run download "$run_id" --name "bankiva-$platform" --dir "$destination"
+done
+
+printf 'Build-Artefakte liegen in: %s\n' "$destination"

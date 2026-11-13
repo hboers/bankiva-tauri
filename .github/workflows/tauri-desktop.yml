@@ -7,26 +7,26 @@ on:
         description: URL embedded as APP_URL in the desktop apps
         required: true
         type: string
+      platforms:
+        description: JSON array of platforms to build
+        required: true
+        default: '["linux","macos","windows"]'
+        type: string
+      request_id:
+        description: Unique identifier used by the local build script
+        required: false
+        default: manual
+        type: string
+
+run-name: Tauri desktop build ${{ inputs.request_id }}
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            name: linux
-            bundle: appimage
-            artifact-path: build/linux/release/bundle/appimage/*.AppImage
-          - os: macos-15
-            name: macos
-            bundle: dmg
-            artifact-path: build/macos/release/bundle/dmg/*.dmg
-          - os: windows-2025
-            name: windows
-            bundle: nsis
-            artifact-path: build/windows/release/bundle/nsis/*.exe
-    runs-on: ${{ matrix.os }}
+        platform: ${{ fromJSON(inputs.platforms) }}
+    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-24.04' || matrix.platform == 'macos' && 'macos-15' || 'windows-2025' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,11 +51,11 @@ jobs:
       - name: Build desktop app
         working-directory: app/bankiva-app
         env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/build/${{ matrix.name }}
-        run: cargo tauri build --bundles ${{ matrix.bundle }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/${{ matrix.platform }}
+        run: cargo tauri build --bundles ${{ matrix.platform == 'linux' && 'appimage' || matrix.platform == 'macos' && 'dmg' || 'nsis' }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bankiva-${{ matrix.name }}
-          path: ${{ matrix.artifact-path }}
+          name: bankiva-${{ matrix.platform }}
+          path: build/${{ matrix.platform }}/release/bundle/${{ matrix.platform == 'linux' && 'appimage/*.AppImage' || matrix.platform == 'macos' && 'dmg/*.dmg' || 'nsis/*.exe' }}
           if-no-files-found: error
