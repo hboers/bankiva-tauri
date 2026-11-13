@@ -6,20 +6,22 @@ Pro Betriebssystem wird genau ein Paket erstellt: Linux als AppImage, macOS als 
 
 ## Lokal bauen
 
-Im Verzeichnis `tauri/linux/bankiva-app`:
+Die gemeinsamen Quelltexte liegen unter `tauri/app/bankiva-app`. Plattform-Builds werden getrennt unter `tauri/build/linux`, `tauri/build/macos` und `tauri/build/windows` abgelegt.
+
+Im Verzeichnis `tauri/app/bankiva-app`:
 
 ```bash
 npm ci
-npm run tauri build
+CARGO_TARGET_DIR=../../build/linux npm run tauri build
 ```
 
-Tauri erzeugt das Paket im jeweiligen Plattform-Bundle-Verzeichnis unter `src-tauri/target/release/bundle/`. Linux benötigt zum Bauen zusätzlich WebKitGTK 4.1 und die in der [Tauri-Linux-Dokumentation](https://tauri.app/start/prerequisites/#linux) genannten Build-Abhängigkeiten. macOS- und Windows-Pakete müssen auf macOS beziehungsweise Windows gebaut werden.
+Tauri erzeugt das Paket im jeweiligen Plattform-Bundle-Verzeichnis unter `tauri/build/<plattform>/release/bundle/`. Linux benötigt zum Bauen zusätzlich WebKitGTK 4.1 und die in der [Tauri-Linux-Dokumentation](https://tauri.app/start/prerequisites/#linux) genannten Build-Abhängigkeiten. macOS- und Windows-Pakete müssen auf macOS beziehungsweise Windows gebaut werden.
 
 Der Standardbuild erzeugt das Linux-AppImage. Auf macOS und Windows das Format explizit wählen:
 
 ```bash
-npm run tauri build -- --bundles dmg   # macOS: einzelnes .dmg
-npm run tauri build -- --bundles nsis  # Windows: einzelne .exe
+CARGO_TARGET_DIR=../../build/macos npm run tauri build -- --bundles dmg   # macOS: einzelnes .dmg
+CARGO_TARGET_DIR=../../build/windows npm run tauri build -- --bundles nsis  # Windows: einzelne .exe
 ```
 
 ## Builds für alle Plattformen
