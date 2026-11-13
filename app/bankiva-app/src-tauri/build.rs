@@ -2,7 +2,7 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    let env_file = manifest_dir.join("../../../../.env");
+    let env_file = manifest_dir.join("../../../.env");
     println!("cargo:rerun-if-changed={}", env_file.display());
 
     let env_contents = fs::read_to_string(&env_file)

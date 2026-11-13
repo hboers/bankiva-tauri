@@ -1,7 +1,7 @@
 # Tauri Desktop-App
 
-- Die gemeinsame native Desktop-App liegt unter `tauri/app/bankiva-app` und verwendet Tauri 2.
-- Plattform-Builds liegen getrennt unter `tauri/build/linux`, `tauri/build/macos` und `tauri/build/windows`.
+- Das Verzeichnis `tauri` ist der Git-Root. Die gemeinsame native Desktop-App liegt unter `app/bankiva-app` und verwendet Tauri 2.
+- Plattform-Builds liegen getrennt unter `build/linux`, `build/macos` und `build/windows`.
 - Beim Paketbau liest `src-tauri/build.rs` ausschließlich `APP_URL` aus der `.env` im Repository-Stamm. Die URL muss absolut sein und mit `http://` oder `https://` beginnen.
 - `APP_URL` wird zur Build-Zeit in die App eingebettet. Für eine geänderte Zieladresse müssen die Pakete neu gebaut werden.
 - Das native Tauri-Fenster lädt die eingebettete URL direkt in seinem WebView.

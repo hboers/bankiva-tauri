@@ -6,22 +6,24 @@ Pro Betriebssystem wird genau ein Paket erstellt: Linux als AppImage, macOS als 
 
 ## Lokal bauen
 
-Die gemeinsamen Quelltexte liegen unter `tauri/app/bankiva-app`. Plattform-Builds werden getrennt unter `tauri/build/linux`, `tauri/build/macos` und `tauri/build/windows` abgelegt.
+Die gemeinsamen Quelltexte liegen unter `app/bankiva-app`. Plattform-Builds werden getrennt unter `build/linux`, `build/macos` und `build/windows` abgelegt.
 
-Im Verzeichnis `tauri/app/bankiva-app`:
+Die App benötigt kein separates Frontend und keine Node.js-Abhängigkeiten. Die leere statische WebView-Datei dient nur als Tauri-Build-Eingabe; das Fenster lädt direkt die beim Build eingebettete `APP_URL`.
+
+Im Verzeichnis `app/bankiva-app`:
 
 ```bash
-npm ci
-CARGO_TARGET_DIR=../../build/linux npm run tauri build
+cargo install tauri-cli --version '^2' --locked
+CARGO_TARGET_DIR=../../build/linux cargo tauri build
 ```
 
-Tauri erzeugt das Paket im jeweiligen Plattform-Bundle-Verzeichnis unter `tauri/build/<plattform>/release/bundle/`. Linux benötigt zum Bauen zusätzlich WebKitGTK 4.1 und die in der [Tauri-Linux-Dokumentation](https://tauri.app/start/prerequisites/#linux) genannten Build-Abhängigkeiten. macOS- und Windows-Pakete müssen auf macOS beziehungsweise Windows gebaut werden.
+Tauri erzeugt das Paket im jeweiligen Plattform-Bundle-Verzeichnis unter `build/<plattform>/release/bundle/`. Linux benötigt zum Bauen zusätzlich WebKitGTK 4.1 und die in der [Tauri-Linux-Dokumentation](https://tauri.app/start/prerequisites/#linux) genannten Build-Abhängigkeiten. macOS- und Windows-Pakete müssen auf macOS beziehungsweise Windows gebaut werden.
 
 Der Standardbuild erzeugt das Linux-AppImage. Auf macOS und Windows das Format explizit wählen:
 
 ```bash
-CARGO_TARGET_DIR=../../build/macos npm run tauri build -- --bundles dmg   # macOS: einzelnes .dmg
-CARGO_TARGET_DIR=../../build/windows npm run tauri build -- --bundles nsis  # Windows: einzelne .exe
+CARGO_TARGET_DIR=../../build/macos cargo tauri build --bundles dmg   # macOS: einzelnes .dmg
+CARGO_TARGET_DIR=../../build/windows cargo tauri build --bundles nsis  # Windows: einzelne .exe
 ```
 
 ## Builds für alle Plattformen

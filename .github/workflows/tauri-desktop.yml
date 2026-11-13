@@ -17,24 +17,18 @@ jobs:
           - os: ubuntu-24.04
             name: linux
             bundle: appimage
-            artifact-path: tauri/build/linux/release/bundle/appimage/*.AppImage
-          - os: macos-14
+            artifact-path: build/linux/release/bundle/appimage/*.AppImage
+          - os: macos-15
             name: macos
             bundle: dmg
-            artifact-path: tauri/build/macos/release/bundle/dmg/*.dmg
-          - os: windows-2022
+            artifact-path: build/macos/release/bundle/dmg/*.dmg
+          - os: windows-2025
             name: windows
             bundle: nsis
-            artifact-path: tauri/build/windows/release/bundle/nsis/*.exe
+            artifact-path: build/windows/release/bundle/nsis/*.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: tauri/app/bankiva-app/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -51,15 +45,14 @@ jobs:
           APP_URL: ${{ inputs.app_url }}
         run: printf 'APP_URL=%s\n' "$APP_URL" > .env
 
-      - name: Install frontend dependencies
-        working-directory: tauri/app/bankiva-app
-        run: npm ci
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
 
       - name: Build desktop app
-        working-directory: tauri/app/bankiva-app
+        working-directory: app/bankiva-app
         env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/tauri/build/${{ matrix.name }}
-        run: npm run tauri build -- --bundles ${{ matrix.bundle }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/${{ matrix.name }}
+        run: cargo tauri build --bundles ${{ matrix.bundle }}
 
       - uses: actions/upload-artifact@v4
         with:
