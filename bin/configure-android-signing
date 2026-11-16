@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Configure the generated Tauri Android project to sign release builds."""
+
+from pathlib import Path
+import re
+import sys
+
+
+gradle_file = Path(__file__).resolve().parents[1] / "app/bankiva-app/src-tauri/gen/android/app/build.gradle.kts"
+source = gradle_file.read_text(encoding="utf-8")
+
+if 'val signingProperties = java.util.Properties()' in source:
+    print(f"Signing ist bereits konfiguriert: {gradle_file}")
+    raise SystemExit(0)
+
+build_types = re.search(r"(?m)^(\s*)buildTypes\s*\{", source)
+if not build_types:
+    sys.exit(f"buildTypes-Block fehlt in {gradle_file}; Tauri-Template prüfen.")
+
+if not re.search(r'(?m)^\s*getByName\("release"\)\s*\{', source[build_types.start():]):
+    sys.exit(f'Release-Block fehlt in {gradle_file}; Tauri-Template prüfen.')
+
+indent = build_types.group(1)
+inner = indent + "    "
+snippet = (
+    f"{indent}signingConfigs {{\n"
+    f"{inner}create(\"release\") {{\n"
+    f"{inner}    val signingProperties = java.util.Properties()\n"
+    f"{inner}    rootProject.file(\"keystore.properties\").inputStream().use {{ signingProperties.load(it) }}\n"
+    f"{inner}    val signingPassword = signingProperties.getProperty(\"password\")\n"
+    f"{inner}    keyAlias = signingProperties.getProperty(\"keyAlias\")\n"
+    f"{inner}    keyPassword = signingPassword\n"
+    f"{inner}    storePassword = signingPassword\n"
+    f"{inner}    storeFile = file(signingProperties.getProperty(\"storeFile\"))\n"
+    f"{inner}}}\n"
+    f"{indent}}}\n"
+)
+source = source[:build_types.start()] + snippet + source[build_types.start():]
+
+# Insert the release signing config into the existing release build type.
+build_types = re.search(r"(?m)^(\s*)buildTypes\s*\{", source)
+release_block = re.search(r'(?m)^(\s*)getByName\("release"\)\s*\{', source[build_types.start():])
+release_start = build_types.start() + release_block.start()
+release_open = source.index("{", release_start)
+release_indent = release_block.group(1) + "    "
+source = source[:release_open + 1] + f"\n{release_indent}signingConfig = signingConfigs.getByName(\"release\")" + source[release_open + 1:]
+
+gradle_file.write_text(source, encoding="utf-8")
+print(f"Release-Signierung konfiguriert: {gradle_file}")

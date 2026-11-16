@@ -6,6 +6,13 @@ usage() {
 Startet den GitHub Actions Build für die angegebenen Plattformen und lädt
 die erzeugten Pakete nach install/<workflow-run-id>/ herunter.
 
+Mobile Builds benötigen GitHub Actions Secrets:
+  Android: ANDROID_KEY_BASE64, ANDROID_KEY_PASSWORD, ANDROID_KEY_ALIAS
+           erzeugt ein signiertes APK und ein Google-Play-AAB.
+  iOS:     IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD, IOS_MOBILE_PROVISION
+           erzeugt Simulator-ZIP und signierte iPhone/iPad-App-Store-IPA.
+           Apple akzeptiert keine selbstsignierten iOS-Zertifikate.
+
 Aufruf:
   bin/build all
   bin/build <windows|linux|macos|android|ios> [...]

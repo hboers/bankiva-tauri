@@ -2,7 +2,7 @@
 
 Die Tauri-App zeigt die in der Projektdatei `.env` konfigurierte Bankiva-Webseite in einem nativen WebView-Fenster. Sie verwendet `APP_URL` (zum Beispiel `APP_URL=https://app4.bankiva.de`). Die Variable wird beim Paketbau aus der `.env` im Repository-Stamm gelesen und in die App eingebettet. Änderungen an `APP_URL` erfordern daher einen erneuten Build.
 
-Pro Desktop-Betriebssystem wird ein Paket erstellt: Linux als AppImage, macOS als DMG und Windows als NSIS-EXE. Android erzeugt APK und AAB. Der iOS-Workflow erzeugt eine App für den iOS-Simulator als ZIP. Für eine auf iPhone oder iPad installierbare IPA sind Apple-Signing-Zertifikate und ein Provisioning-Profil erforderlich; sie werden hier nicht eingerichtet.
+Pro Desktop-Betriebssystem wird ein Paket erstellt: Linux als AppImage, macOS als DMG und Windows als NSIS-EXE. Android erzeugt ein signiertes APK zur Geräteinstallation und ein signiertes AAB für Google Play. iOS erzeugt eine Simulator-App als ZIP und eine signierte IPA für echte iPhones und iPads sowie App Store Connect. Der iOS-Build benötigt ein Apple-Distribution-Zertifikat und ein App-Store-Provisioning-Profil. Selbstsignierte „Snakeoil“-Zertifikate funktionieren für iOS nicht.
 
 Das AppImage bündelt die App, benötigt aber weiterhin die passenden WebKitGTK-/GTK-Laufzeitbibliotheken des Linux-Systems. macOS stellt WebKit mit dem Betriebssystem bereit. Unter Windows wird die WebView2-Laufzeit benötigt; der NSIS-Installer verwendet den kleinen WebView2-Bootstrapper und lädt die Laufzeit bei Bedarf aus dem Internet.
 
@@ -36,9 +36,67 @@ CARGO_TARGET_DIR=../../build/android cargo tauri android build --apk --aab
 
 cargo tauri ios init --ci
 CARGO_TARGET_DIR=../../build/ios cargo tauri ios build --target aarch64-sim --ci
+CARGO_TARGET_DIR=../../build/ios cargo tauri ios build --target aarch64 --export-method app-store-connect --ci
 ```
 
-Die Android-Ausgaben liegen in `src-tauri/gen/android/app/build/outputs/`. Die iOS-Simulator-App liegt unter `src-tauri/gen/apple/build/`.
+Die Android-Ausgaben liegen in `src-tauri/gen/android/app/build/outputs/`. Die iOS-Simulator-App und die exportierte IPA liegen unter `src-tauri/gen/apple/build/`.
+
+Für lokale Android-Release-Pakete muss im Verzeichnis `src-tauri/gen/android/` zusätzlich eine `keystore.properties` mit `keyAlias`, `password` und `storeFile` liegen; der Keystore-Pfad muss in `storeFile` stehen. Danach `python3 bin/configure-android-signing` aus dem Repository-Stamm ausführen. Der CI-Workflow erstellt diese Datei temporär aus den beschriebenen GitHub Secrets.
+
+## Build- und Veröffentlichungsdateien
+
+| Datei / Einstellung | Zweck |
+| --- | --- |
+| `.env` im Repository-Stamm | Lokale Build-Zieladresse als `APP_URL=https://...`; wird in die App eingebettet. |
+| `dotenv.example` | Vorlage für `.env`; enthält `APP_URL`. |
+| `app/bankiva-app/src-tauri/tauri.conf.json` | Produktname, App-ID (`de.bankiva.app4`), WebView-Fenster und Bundle-Grundeinstellungen. Die App-ID muss auch in Apple App Store Connect registriert sein. |
+| `app/bankiva-app/src-tauri/icons/` | Tauri-Icons für Desktop und Mobile, abgeleitet aus `../../4.0/public/logo512.png`. |
+| `app/bankiva-app/src-tauri/Cargo.toml` und `Cargo.lock` | Tauri-Abhängigkeiten und festgelegte Rust-Paketversionen. |
+| `.github/workflows/tauri-desktop.yml` | CI-Builds für Desktop, Android und iOS; URL-/Versions-Einbettung, Signierung und Artefakt-Upload. |
+| `bin/build` | Startet den getaggten GitHub Actions Build und lädt Artefakte nach `install/<workflow-run-id>/`. |
+| `bin/configure-android-signing` | Ergänzt nach `tauri android init` die Release-Signierung in der generierten Gradle-Datei. |
+
+### Android-Signierung
+
+Der Workflow benötigt eine dauerhaft aufbewahrte Android-Upload-Keystore-Datei. Ein selbstsigniertes Android-Zertifikat (hier als Snakeoil/Testzertifikat verwendet) kann als Upload-Key dienen, sofern derselbe Schlüssel für künftige Updates erhalten bleibt und sein Zertifikat in Google Play registriert wird. Die Datei und Passwörter gehören **nicht ins Repository**.
+
+Einmalig lokal ein Keystore-Verzeichnis und einen Upload-Key erzeugen (Passwort interaktiv eingeben):
+
+```bash
+mkdir -p ~/.config/bankiva-app/signing
+chmod 700 ~/.config/bankiva-app/signing
+keytool -genkeypair -v \
+  -keystore ~/.config/bankiva-app/signing/android-upload-snakeoil.jks \
+  -alias bankiva-upload -keyalg RSA -keysize 2048 -validity 10000
+```
+
+Die gesamte `.jks`-Datei wird als Base64-Secret `ANDROID_KEY_BASE64` hinterlegt. Dazu kommen `ANDROID_KEY_PASSWORD` (Keystore- und Schlüsselpasswort) und `ANDROID_KEY_ALIAS` (hier `bankiva-upload`). Unter Linux kann der Base64-Wert ohne Zeilenumbrüche mit `base64 -w 0 ~/.config/bankiva-app/signing/android-upload-snakeoil.jks` erzeugt werden; unter macOS mit `base64 -i ~/.config/bankiva-app/signing/android-upload-snakeoil.jks`.
+
+Die drei Werte gehören in GitHub unter **Repository → Settings → Secrets and variables → Actions → New repository secret**. Im Workflow werden sie nur temporär als `src-tauri/gen/android/keystore.properties` und `$RUNNER_TEMP/bankiva-upload-key.jks` abgelegt. Der generierte Gradle-Build verwendet sie für Release-APK und AAB.
+
+Für produktive Google-Play-Veröffentlichungen empfiehlt sich ein dedizierter, gesicherter Upload-Key und Play App Signing. Wenn ein echter Upload-Key ersetzt wird, muss Google Play den neuen Upload-Zertifikat-Fingerprint akzeptieren. Den Schlüssel nicht wechseln oder verlieren, ohne zuvor den Play-Console-Ablauf für einen Upload-Key-Reset zu erledigen.
+
+### iOS/iPadOS-Signierung
+
+Apple akzeptiert keine selbstsignierten Zertifikate für Installationen auf realen Geräten oder App Store Connect. Erforderlich sind ein Apple Developer Program Team, die registrierte explizite App-ID `de.bankiva.app4`, ein **Apple Distribution** Zertifikat als exportierte `.p12`-Datei und ein dazu passendes **App Store Connect** Provisioning-Profil (`.mobileprovision`). Das Zertifikat muss den privaten Schlüssel enthalten; das Profil muss zu App-ID und Zertifikat passen.
+
+Die Dateien nicht in Git ablegen. Als GitHub Repository Actions Secrets speichern:
+
+| Secret | Inhalt |
+| --- | --- |
+| `IOS_CERTIFICATE` | Base64 der `.p12` Datei |
+| `IOS_CERTIFICATE_PASSWORD` | Export-Passwort der `.p12` Datei |
+| `IOS_MOBILE_PROVISION` | Base64 der App-Store-Connect `.mobileprovision` Datei |
+
+Auf macOS kann Base64 mit `base64 -i datei.p12` beziehungsweise `base64 -i profil.mobileprovision` erstellt werden. Tauri liest die Werte aus Umgebungsvariablen; die Dateien müssen nicht im Checkout abgelegt werden. Der Workflow bricht den iOS-Geräte-/Store-Build mit einer verständlichen Meldung ab, wenn eines der drei Secrets fehlt. Apple App Store Connect API-Schlüssel sind für das Erstellen der IPA nicht nötig; sie wären zusätzlich erforderlich, falls der Workflow künftig auch den Store-Upload automatisieren soll.
+
+Die iOS-IPA ist für echte iPhones und iPads über App Store Connect/TestFlight vorgesehen. Der Simulator-ZIP-Build bleibt zum Testen im Simulator. Google Play bzw. Apple können die Pakete nach dem Upload noch prüfen; der CI-Build selbst veröffentlicht nicht automatisch.
+
+### Kamera und Bild-Uploads
+
+Die WebView erlaubt Kameraanfragen ausschließlich von der in `APP_URL` eingebetteten Bankiva-Origin. iOS und macOS erhalten die erforderlichen Kamera-/Fotomediathek-Texte über `src-tauri/Info.plist`; Android ergänzt `bin/configure-android-camera` nach der Tauri-Initialisierung um die Kamera-Berechtigung. In den Bankiva-Dateiablagen ergänzt die App einen „Foto aufnehmen“-Knopf, der auf Mobilgeräten die Rückkamera öffnet und das Foto zur normalen Dateiauswahl hinzufügt. Der bestehende Kamera-Knopf bei Verlustmeldungen bleibt zuständig. Am Desktop bleiben Dateiauswahl und Webseitenzugriff auf angeschlossene Kameras verfügbar.
+
+Nach dem Laden der Bankiva-Seite komprimiert die App große Bilddateien in der WebView vor dem Absenden: maximal 2000 Pixel Kantenlänge und JPEG-Qualität 78 %. Kleine Bilder bleiben unverändert. Die Komprimierung gilt für Bilddateien in Datei-Upload-Feldern, etwa bei Verlustmeldungen und Dokumenten; andere Dateien wie PDFs werden unverändert übertragen. Browser/WebView-Kompatibilität und tatsächliche Upload-Validierung müssen auf den Zielgeräten geprüft werden.
 
 ## Builds für alle Plattformen
 

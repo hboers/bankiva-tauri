@@ -93,6 +93,29 @@ jobs:
         working-directory: app/bankiva-app
         run: cargo tauri android init --ci --config ../../build/version.json
 
+      - name: Configure Android camera access
+        if: matrix.platform == 'android'
+        run: python3 bin/configure-android-camera
+
+      - name: Configure Android release signing
+        if: matrix.platform == 'android'
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ANDROID_KEY_BASE64" || -z "$ANDROID_KEY_PASSWORD" || -z "$ANDROID_KEY_ALIAS" ]]; then
+            printf 'Android-Signierung fehlt. GitHub Actions Secrets ANDROID_KEY_BASE64, ANDROID_KEY_PASSWORD und ANDROID_KEY_ALIAS setzen.\n' >&2
+            exit 1
+          fi
+          key_file="$RUNNER_TEMP/bankiva-upload-key.jks"
+          printf '%s' "$ANDROID_KEY_BASE64" | base64 --decode > "$key_file"
+          signing_dir="app/bankiva-app/src-tauri/gen/android"
+          printf 'keyAlias=%s\npassword=%s\nstoreFile=%s\n' \
+            "$ANDROID_KEY_ALIAS" "$ANDROID_KEY_PASSWORD" "$key_file" > "$signing_dir/keystore.properties"
+          python3 bin/configure-android-signing
+
       - name: Build Android app
         if: matrix.platform == 'android'
         working-directory: app/bankiva-app
@@ -112,6 +135,28 @@ jobs:
           CARGO_TARGET_DIR: ${{ github.workspace }}/build/ios
         run: cargo tauri ios build --target aarch64-sim --ci --config ../../build/version.json
 
+      - name: Require Apple distribution signing for device and App Store builds
+        if: matrix.platform == 'ios'
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        run: |
+          if [[ -z "$IOS_CERTIFICATE" || -z "$IOS_CERTIFICATE_PASSWORD" || -z "$IOS_MOBILE_PROVISION" ]]; then
+            printf 'iOS-Geräte- und App-Store-Build benötigt IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD und IOS_MOBILE_PROVISION in GitHub Actions Secrets.\n' >&2
+            exit 1
+          fi
+
+      - name: Build iOS device and App Store package
+        if: matrix.platform == 'ios'
+        working-directory: app/bankiva-app
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/ios
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+        run: cargo tauri ios build --target aarch64 --export-method app-store-connect --ci --config ../../build/version.json
+
       - name: Package iOS simulator app
         if: matrix.platform == 'ios'
         run: |
@@ -119,6 +164,14 @@ jobs:
           app_path=$(find app/bankiva-app/src-tauri/gen/apple/build -type d -name '*.app' -path '*arm64-sim*' -print -quit)
           test -n "$app_path"
           ditto -c -k --sequesterRsrc --keepParent "$app_path" build/ios/artifact/bankiva-ios-simulator.zip
+
+      - name: Package iOS App Store IPA
+        if: matrix.platform == 'ios'
+        run: |
+          mkdir -p build/ios/artifact
+          ipa_path=$(find app/bankiva-app/src-tauri/gen/apple/build -type f -name '*.ipa' -print -quit)
+          test -n "$ipa_path"
+          cp "$ipa_path" build/ios/artifact/bankiva-ios-appstore.ipa
 
       - uses: actions/upload-artifact@v4
         if: matrix.platform == 'linux'
@@ -153,6 +206,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: matrix.platform == 'ios'
         with:
-          name: bankiva-ios-simulator
-          path: build/ios/artifact/bankiva-ios-simulator.zip
+          name: bankiva-ios
+          path: |
+            build/ios/artifact/bankiva-ios-simulator.zip
+            build/ios/artifact/bankiva-ios-appstore.ipa
           if-no-files-found: error
