@@ -14,7 +14,7 @@ on:
       platforms:
         description: JSON array of platforms to build
         required: true
-        default: '["linux","macos","windows","android","ios"]'
+        default: '["linux","macos","macos-intel","windows","android","ios"]'
         type: string
       request_id:
         description: Unique identifier used by the local build script
@@ -30,11 +30,15 @@ jobs:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.platforms) }}
-    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-24.04' || matrix.platform == 'macos' && 'macos-15' || matrix.platform == 'windows' && 'windows-2025' || matrix.platform == 'android' && 'ubuntu-24.04' || 'macos-15' }}
+    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-24.04' || matrix.platform == 'macos' && 'macos-15' || matrix.platform == 'macos-intel' && 'macos-15-intel' || matrix.platform == 'windows' && 'windows-2025' || matrix.platform == 'android' && 'ubuntu-24.04' || 'macos-15' }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Intel macOS Rust target
+        if: matrix.platform == 'macos-intel'
+        run: rustup target add x86_64-apple-darwin
 
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
@@ -82,11 +86,11 @@ jobs:
         run: cargo install tauri-cli --version '^2' --locked
 
       - name: Build desktop app
-        if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'windows'
+        if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'macos-intel' || matrix.platform == 'windows'
         working-directory: app/bankiva-app
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/build/${{ matrix.platform }}
-        run: cargo tauri build --config ../../build/version.json --bundles ${{ matrix.platform == 'linux' && 'appimage' || matrix.platform == 'macos' && 'dmg' || 'nsis' }}
+        run: cargo tauri build --config ../../build/version.json --bundles ${{ matrix.platform == 'linux' && 'appimage' || (matrix.platform == 'macos' || matrix.platform == 'macos-intel') && 'dmg' || 'nsis' }} ${{ matrix.platform == 'macos-intel' && '--target x86_64-apple-darwin' || '' }}
 
       - name: Initialize Android project
         if: matrix.platform == 'android'
@@ -185,6 +189,13 @@ jobs:
         with:
           name: bankiva-macos
           path: build/macos/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'macos-intel'
+        with:
+          name: bankiva-macos-intel
+          path: build/macos-intel/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4

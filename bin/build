@@ -4,7 +4,9 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Startet den GitHub Actions Build für die angegebenen Plattformen und lädt
-die erzeugten Pakete nach install/<workflow-run-id>/ herunter.
+die erzeugten Pakete nach install/<workflow-run-id>/ herunter. `desktop`
+baut Windows, Linux sowie macOS für Apple Silicon und Intel und kopiert die
+Pakete nach app4.bankiva.de.
 
 Mobile Builds benötigen GitHub Actions Secrets:
   Android: ANDROID_KEY_BASE64, ANDROID_KEY_PASSWORD, ANDROID_KEY_ALIAS
@@ -15,12 +17,13 @@ Mobile Builds benötigen GitHub Actions Secrets:
 
 Aufruf:
   bin/build all
-  bin/build <windows|linux|macos|android|ios> [...]
+  bin/build <windows|linux|macos|macos-intel|android|ios|desktop> [...]
 
 Beispiele:
   bin/build linux
-  bin/build windows macos
+  bin/build windows macos macos-intel
   bin/build android ios
+  bin/build desktop
   bin/build all
 EOF
 }
@@ -39,10 +42,12 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
 platforms=()
+publish_desktop=false
 for requested_platform in "$@"; do
   case "$requested_platform" in
-    all) requested_platforms=(windows linux macos android ios) ;;
-    windows|linux|macos|android|ios) requested_platforms=("$requested_platform") ;;
+    all) requested_platforms=(windows linux macos macos-intel android ios) ;;
+    desktop) requested_platforms=(windows linux macos macos-intel); publish_desktop=true ;;
+    windows|linux|macos|macos-intel|android|ios) requested_platforms=("$requested_platform") ;;
     *) printf 'Unbekannte Plattform: %s\n\n' "$requested_platform" >&2; usage >&2; exit 2 ;;
   esac
   for platform in "${requested_platforms[@]}"; do
@@ -59,7 +64,11 @@ for requested_platform in "$@"; do
   done
 done
 
-for command_name in gh git; do
+required_commands=(gh git)
+if [[ $publish_desktop == true ]]; then
+  required_commands+=(ssh scp)
+fi
+for command_name in "${required_commands[@]}"; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf 'Benötigtes Programm nicht gefunden: %s\n' "$command_name" >&2
     exit 1
@@ -72,9 +81,28 @@ if [[ ! $app_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+if ! gh api user --jq .login >/dev/null 2>&1; then
   printf 'Keine gültige gh-Anmeldung. Bitte zuerst „gh auth login“ ausführen.\n' >&2
   exit 1
+fi
+
+if [[ $publish_desktop == true ]]; then
+  origin_url=$(git remote get-url origin)
+  case "$origin_url" in
+    git@github.com:*) repository=${origin_url#git@github.com:} ;;
+    ssh://git@github.com/*) repository=${origin_url#ssh://git@github.com/} ;;
+    https://github.com/*) repository=${origin_url#https://github.com/} ;;
+    *) printf 'origin muss auf ein GitHub-Repository zeigen.\n' >&2; exit 1 ;;
+  esac
+  repository=${repository%.git}
+  if ! remote_tag=$(gh api "repos/$repository/commits/$app_version" --jq .sha 2>/dev/null); then
+    printf 'Git-Tag %s fehlt auf GitHub. Bitte zuerst „git push origin %s“ ausführen.\n' "$app_version" "$app_version" >&2
+    exit 1
+  fi
+  if [[ $remote_tag != "$(git rev-parse HEAD)" ]]; then
+    printf 'Das GitHub-Tag %s zeigt nicht auf HEAD. Bitte Release-Commit und Tag prüfen.\n' "$app_version" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -f .env ]]; then
@@ -134,3 +162,179 @@ for platform in "${platforms[@]}"; do
 done
 
 printf 'Build-Artefakte liegen in: %s\n' "$destination"
+
+if [[ $publish_desktop == true ]]; then
+  remote_host='app4.bankiva.de'
+  remote_dir='/opt/bankiva/4/public/download'
+  local_download_dir="$ROOT_DIR/../../4.0/public/download"
+  declare -a desktop_artifacts=()
+
+  for spec in 'linux:*.AppImage' 'macos:bankiva-app_*_aarch64.dmg' 'macos-intel:bankiva-app_*_x64.dmg' 'windows:*.exe'; do
+    platform=${spec%%:*}
+    pattern=${spec#*:}
+    mapfile -t matches < <(find "$destination" -type f -name "$pattern" -print | sort)
+    if ((${#matches[@]} != 1)); then
+      printf 'Erwartete genau ein Artefakt für %s, gefunden: %s\n' "$platform" "${#matches[@]}" >&2
+      exit 1
+    fi
+    desktop_artifacts+=("${matches[0]}")
+  done
+
+  for artifact in "${desktop_artifacts[@]}"; do
+    filename=${artifact##*/}
+    if [[ ! $filename =~ ^[A-Za-z0-9._-]+$ ]]; then
+      printf 'Unerwarteter Paketname: %s\n' "$filename" >&2
+      exit 1
+    fi
+  done
+
+  mkdir -p "$local_download_dir"
+  if [[ ! -d $local_download_dir || ! -w $local_download_dir ]]; then
+    printf 'Lokales Download-Verzeichnis fehlt oder ist nicht beschreibbar: %s\n' "$local_download_dir" >&2
+    exit 1
+  fi
+
+  for artifact in "${desktop_artifacts[@]}"; do
+    filename=${artifact##*/}
+    if [[ -e "$local_download_dir/$filename" ]]; then
+      printf 'Lokales Paket existiert bereits und wird nicht überschrieben: %s\n' "$local_download_dir/$filename" >&2
+      exit 1
+    fi
+  done
+
+  remote_check="set -eu; printf 'Zielhost: '; hostname -f; printf 'Zielpfad: '; realpath -e '$remote_dir'; test -d '$remote_dir'; test -w '$remote_dir';"
+  for artifact in "${desktop_artifacts[@]}"; do
+    filename=${artifact##*/}
+    remote_check+=" test ! -e '$remote_dir/$filename';"
+  done
+
+  printf 'Prüfe SSH-Ziel %s:%s …\n' "$remote_host" "$remote_dir"
+  ssh -F /dev/null -o BatchMode=yes "$remote_host" "$remote_check"
+
+  printf 'Kopiere Pakete lokal nach %s …\n' "$local_download_dir"
+  for artifact in "${desktop_artifacts[@]}"; do
+    filename=${artifact##*/}
+    cp -p -- "$artifact" "$local_download_dir/$filename"
+    if ! cmp -s -- "$artifact" "$local_download_dir/$filename"; then
+      printf 'Lokale Kopie stimmt nicht mit dem Build-Artefakt überein: %s\n' "$filename" >&2
+      exit 1
+    fi
+  done
+
+  printf 'Kopiere Windows-, Linux-, Apple-Silicon- und Intel-macOS-Pakete remote nach %s:%s …\n' "$remote_host" "$remote_dir"
+  scp -F /dev/null -p "${desktop_artifacts[@]}" "$remote_host:$remote_dir/"
+
+  printf 'Prüfe hochgeladene Pakete …\n'
+  for artifact in "${desktop_artifacts[@]}"; do
+    filename=${artifact##*/}
+    local_sha=$(sha256sum "$local_download_dir/$filename" | awk '{print $1}')
+    remote_sha=$(ssh -F /dev/null -o BatchMode=yes "$remote_host" "test -s '$remote_dir/$filename' && sha256sum '$remote_dir/$filename' | cut -d ' ' -f 1")
+    if [[ $local_sha != "$remote_sha" ]]; then
+      printf 'Remote-Kopie stimmt nicht mit der lokalen Datei überein: %s\n' "$filename" >&2
+      exit 1
+    fi
+    printf '  %s\n' "$filename"
+  done
+
+  printf 'Entferne erfolgreich kopierte Build-Artefakte aus %s …\n' "$destination"
+  rm -- "${desktop_artifacts[@]}"
+
+  classify_download() {
+    local filename="$1"
+    DOWNLOAD_PLATFORM=''
+    DOWNLOAD_VERSION=''
+
+    case "$filename" in
+      bankiva-app_*_amd64.AppImage)
+        if [[ $filename =~ ^bankiva-app_([0-9]+\.[0-9]+\.[0-9]+)_amd64\.AppImage$ ]]; then
+          DOWNLOAD_PLATFORM='linux'
+          DOWNLOAD_VERSION=${BASH_REMATCH[1]}
+        fi
+        ;;
+      bankiva-app_*_aarch64.dmg)
+        if [[ $filename =~ ^bankiva-app_([0-9]+\.[0-9]+\.[0-9]+)_aarch64\.dmg$ ]]; then
+          DOWNLOAD_PLATFORM='macos'
+          DOWNLOAD_VERSION=${BASH_REMATCH[1]}
+        fi
+        ;;
+      bankiva-app_*_x64.dmg)
+        if [[ $filename =~ ^bankiva-app_([0-9]+\.[0-9]+\.[0-9]+)_x64\.dmg$ ]]; then
+          DOWNLOAD_PLATFORM='macos-intel'
+          DOWNLOAD_VERSION=${BASH_REMATCH[1]}
+        fi
+        ;;
+      bankiva-app_*-setup.exe)
+        if [[ $filename =~ ^bankiva-app_([0-9]+\.[0-9]+\.[0-9]+)_[A-Za-z0-9_-]+-setup\.exe$ ]]; then
+          DOWNLOAD_PLATFORM='windows'
+          DOWNLOAD_VERSION=${BASH_REMATCH[1]}
+        fi
+        ;;
+    esac
+
+    [[ -n $DOWNLOAD_PLATFORM && -n $DOWNLOAD_VERSION ]]
+  }
+
+  is_older_version() {
+    local version="$1"
+    [[ $version != "$app_version" \
+      && $(printf '%s\n%s\n' "$version" "$app_version" | sort -V | head -n 1) == "$version" ]]
+  }
+
+  declare -a stale_local_files=() stale_remote_files=()
+  shopt -s nullglob
+  local_candidates=("$local_download_dir"/*)
+  shopt -u nullglob
+  for path in "${local_candidates[@]}"; do
+    [[ -f $path ]] || continue
+    filename=${path##*/}
+    if classify_download "$filename" && is_older_version "$DOWNLOAD_VERSION"; then
+      stale_local_files+=("$path")
+    fi
+  done
+
+  remote_files=$(ssh -F /dev/null -o BatchMode=yes "$remote_host" \
+    "find '$remote_dir' -maxdepth 1 -type f -printf '%f\\n'")
+  while IFS= read -r remote_file; do
+    [[ -n $remote_file ]] || continue
+    if classify_download "$remote_file" && is_older_version "$DOWNLOAD_VERSION"; then
+      stale_remote_files+=("$remote_file")
+    fi
+  done <<< "$remote_files"
+
+  if ((${#stale_local_files[@]} || ${#stale_remote_files[@]})); then
+    backup_dir="$destination/previous-downloads"
+    mkdir -p "$backup_dir/local" "$backup_dir/remote"
+    printf 'Sichere ältere Installer vor dem Entfernen in %s …\n' "$backup_dir"
+    for path in "${stale_local_files[@]}"; do
+      filename=${path##*/}
+      cp -p -- "$path" "$backup_dir/local/$filename"
+      cmp -s -- "$path" "$backup_dir/local/$filename"
+    done
+    for filename in "${stale_remote_files[@]}"; do
+      scp -F /dev/null -p "$remote_host:$remote_dir/$filename" "$backup_dir/remote/"
+      remote_sha=$(ssh -F /dev/null -o BatchMode=yes "$remote_host" \
+        "sha256sum '$remote_dir/$filename' | cut -d ' ' -f 1")
+      local_sha=$(sha256sum "$backup_dir/remote/$filename" | cut -d ' ' -f 1)
+      if [[ $remote_sha != "$local_sha" ]]; then
+        printf 'Sicherung stimmt nicht überein; ältere Datei bleibt erhalten: %s\n' "$filename" >&2
+        exit 1
+      fi
+    done
+
+    printf 'Entferne ältere Pakete derselben Plattform aus dem Remote-Verzeichnis …\n'
+    for filename in "${stale_remote_files[@]}"; do
+      ssh -F /dev/null -o BatchMode=yes "$remote_host" "rm -- '$remote_dir/$filename'"
+      ssh -F /dev/null -o BatchMode=yes "$remote_host" "test ! -e '$remote_dir/$filename'"
+      printf '  %s\n' "$filename"
+    done
+    printf 'Entferne ältere Pakete derselben Plattform aus dem lokalen Download-Verzeichnis …\n'
+    for path in "${stale_local_files[@]}"; do
+      rm -- "$path"
+      [[ ! -e $path ]]
+      printf '  %s\n' "${path##*/}"
+    done
+  else
+    printf 'Keine älteren Tauri-Desktop-Pakete zum Entfernen gefunden.\n'
+  fi
+
+fi

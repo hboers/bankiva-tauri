@@ -2,7 +2,9 @@
 
 Die Tauri-App zeigt die in der Projektdatei `.env` konfigurierte Bankiva-Webseite in einem nativen WebView-Fenster. Sie verwendet `APP_URL` (zum Beispiel `APP_URL=https://app4.bankiva.de`). Die Variable wird beim Paketbau aus der `.env` im Repository-Stamm gelesen und in die App eingebettet. Änderungen an `APP_URL` erfordern daher einen erneuten Build.
 
-Pro Desktop-Betriebssystem wird ein Paket erstellt: Linux als AppImage, macOS als DMG und Windows als NSIS-EXE. Android erzeugt ein signiertes APK zur Geräteinstallation und ein signiertes AAB für Google Play. iOS erzeugt eine Simulator-App als ZIP und eine signierte IPA für echte iPhones und iPads sowie App Store Connect. Der iOS-Build benötigt ein Apple-Distribution-Zertifikat und ein App-Store-Provisioning-Profil. Selbstsignierte „Snakeoil“-Zertifikate funktionieren für iOS nicht.
+Beim Laden setzt die App auf genau dieser Origin den Session-Cookie `bankiva_tauri` auf `windows`, `macos`, `linux`, `android`, `ios` oder `other`. Die Webseite kann so Tauri-Aufrufe und das Betriebssystem der App erkennen. Der Cookie wird per JavaScript gesetzt, ist daher nicht `HttpOnly` und kein Sicherheitsnachweis; der erste HTTP-Aufruf enthält ihn noch nicht.
+
+Pro Desktop-Plattform wird ein Paket erstellt: Linux als AppImage, macOS als DMG für Apple Silicon und zusätzlich als DMG für Intel-Macs, Windows als NSIS-EXE. Android erzeugt ein signiertes APK zur Geräteinstallation und ein signiertes AAB für Google Play. iOS erzeugt eine Simulator-App als ZIP und eine signierte IPA für echte iPhones und iPads sowie App Store Connect. Der iOS-Build benötigt ein Apple-Distribution-Zertifikat und ein App-Store-Provisioning-Profil. Selbstsignierte „Snakeoil“-Zertifikate funktionieren für iOS nicht.
 
 Das AppImage bündelt die App, benötigt aber weiterhin die passenden WebKitGTK-/GTK-Laufzeitbibliotheken des Linux-Systems. macOS stellt WebKit mit dem Betriebssystem bereit. Unter Windows wird die WebView2-Laufzeit benötigt; der NSIS-Installer verwendet den kleinen WebView2-Bootstrapper und lädt die Laufzeit bei Bedarf aus dem Internet.
 
@@ -25,6 +27,7 @@ Der Standardbuild erzeugt das Linux-AppImage. Auf macOS und Windows das Format e
 
 ```bash
 CARGO_TARGET_DIR=../../build/macos cargo tauri build --bundles dmg    # macOS: .dmg
+CARGO_TARGET_DIR=../../build/macos-intel cargo tauri build --target x86_64-apple-darwin --bundles dmg # Intel-Mac: .dmg
 CARGO_TARGET_DIR=../../build/windows cargo tauri build --bundles nsis # Windows: .exe
 ```
 
@@ -100,14 +103,17 @@ Nach dem Laden der Bankiva-Seite komprimiert die App große Bilddateien in der W
 
 ## Builds für alle Plattformen
 
-Der manuelle GitHub Actions Workflow `Tauri App Builds` baut standardmäßig Linux, macOS, Windows, Android und iOS-Simulator separat. Beim Start des Workflows sind `APP_URL` und `APP_VERSION` anzugeben. `APP_VERSION` muss aus drei numerischen Teilen bestehen und zum Git-Tag passen, zum Beispiel `0.1.1`. Android liefert APK/AAB, iOS eine Simulator-App als ZIP. Eine signierte IPA zur Installation auf realen Geräten erfordert zusätzlich Apple-Zertifikate und ein Provisioning-Profil.
+Der manuelle GitHub Actions Workflow `Tauri App Builds` baut standardmäßig Linux, macOS für Apple Silicon und Intel, Windows, Android und iOS-Simulator separat. Der Intel-macOS-Build läuft auf `macos-15-intel` und verwendet Rust-Target `x86_64-apple-darwin`. Beim Start des Workflows sind `APP_URL` und `APP_VERSION` anzugeben. `APP_VERSION` muss aus drei numerischen Teilen bestehen und zum Git-Tag passen, zum Beispiel `0.1.1`. Android liefert APK/AAB, iOS eine Simulator-App als ZIP. Eine signierte IPA zur Installation auf realen Geräten erfordert zusätzlich Apple-Zertifikate und ein Provisioning-Profil.
 
-Mit `bin/build` lassen sich Plattformen auswählen. `bin/build all` baut alle unterstützten Plattformen. Das Script liest `APP_URL` aus `.env`, verwendet das numerische Git-Tag am aktuellen Commit als Paketversion und startet den Workflow auf diesem Tag. Commit und Tag müssen bereits auf GitHub liegen. Das Script wartet auf den Abschluss und lädt die Pakete nach `install/<workflow-run-id>/` herunter. Der Commit mit dem Workflow muss auf GitHub liegen und das Tag muss dorthin gepusht sein. Voraussetzung sind eine gültige `gh`-Anmeldung (`gh auth login`) und eine `.env` mit gültiger `APP_URL`.
+Mit `bin/build` lassen sich Plattformen auswählen. `bin/build all` baut alle unterstützten Plattformen. `bin/build desktop` baut Windows, Linux sowie macOS für Apple Silicon und Intel und kopiert die vier Pakete nach `4.0/public/download` und `app4.bankiva.de:/opt/bankiva/4/public/download`. Der Upload verlangt eine erreichbare SSH-Verbindung ohne interaktive Passwortabfrage. Vor dem Kopieren prüft das Script Host, Zielverzeichnisse, Schreibrechte und Dateinamen; vorhandene gleichnamige Pakete werden nicht überschrieben. Nach erfolgreicher Kopie und Prüfsummenprüfung sichert es ältere Installer in `install/<workflow-run-id>/previous-downloads/`, entfernt ältere Versionen derselben Plattform aus beiden Download-Verzeichnissen und löscht die gerade übertragenen Build-Artefakte aus `install/<workflow-run-id>/`. Sicherungskopien bleiben dort erhalten. Andere Dateien in den Download-Verzeichnissen bleiben unangetastet.
+
+Das Script liest `APP_URL` aus `.env`, verwendet das numerische Git-Tag am aktuellen Commit als Paketversion und startet den Workflow auf diesem Tag. Commit und Tag müssen bereits auf GitHub liegen. Das Script wartet auf den Abschluss und lädt die Pakete nach `install/<workflow-run-id>/` herunter. Der Commit mit dem Workflow muss auf GitHub liegen und das Tag muss dorthin gepusht sein. Voraussetzung sind eine gültige `gh`-Anmeldung (`gh auth login`) und eine `.env` mit gültiger `APP_URL`.
 
 ```bash
 bin/build linux
-bin/build windows macos
+bin/build windows macos macos-intel
 bin/build android ios
+bin/build desktop
 bin/build all
 bin/build --help
 ```
