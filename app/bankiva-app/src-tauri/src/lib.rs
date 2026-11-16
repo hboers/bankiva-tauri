@@ -1,11 +1,16 @@
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let app_url = url::Url::parse(env!("BANKIVA_APP_URL"))
+        .expect("BANKIVA_APP_URL must be a valid absolute URL");
+
     tauri::Builder::default()
-        .setup(|app| {
-            let app_url = url::Url::parse(env!("BANKIVA_APP_URL"))?;
-            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(app_url))
-                .title("Bankiva")
-                .inner_size(1200.0, 800.0)
-                .build()?;
+        .setup(move |app| {
+            let window = app
+                .get_webview_window("main")
+                .expect("main window should be configured");
+            window.navigate(app_url.clone())?;
             Ok(())
         })
         .run(tauri::generate_context!())

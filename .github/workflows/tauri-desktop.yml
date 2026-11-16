@@ -1,16 +1,20 @@
-name: Tauri Desktop Builds
+name: Tauri App Builds
 
 on:
   workflow_dispatch:
     inputs:
       app_url:
-        description: URL embedded as APP_URL in the desktop apps
+        description: URL embedded as APP_URL in the apps
+        required: true
+        type: string
+      app_version:
+        description: Numeric major.minor.build version from the Git tag
         required: true
         type: string
       platforms:
         description: JSON array of platforms to build
         required: true
-        default: '["linux","macos","windows"]'
+        default: '["linux","macos","windows","android","ios"]'
         type: string
       request_id:
         description: Unique identifier used by the local build script
@@ -18,7 +22,7 @@ on:
         default: manual
         type: string
 
-run-name: Tauri desktop build ${{ inputs.request_id }}
+run-name: Tauri app ${{ inputs.app_version }} build ${{ inputs.request_id }}
 
 jobs:
   build:
@@ -26,36 +30,129 @@ jobs:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.platforms) }}
-    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-24.04' || matrix.platform == 'macos' && 'macos-15' || 'windows-2025' }}
+    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-24.04' || matrix.platform == 'macos' && 'macos-15' || matrix.platform == 'windows' && 'windows-2025' || matrix.platform == 'android' && 'ubuntu-24.04' || 'macos-15' }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
+      - name: Set up Android SDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        if: matrix.platform == 'android'
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+
+      - name: Set up iOS dependencies
+        if: matrix.platform == 'ios'
+        run: |
+          brew install cocoapods
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+
       - name: Write build configuration
         shell: bash
         env:
           APP_URL: ${{ inputs.app_url }}
-        run: printf 'APP_URL=%s\n' "$APP_URL" > .env
+          APP_VERSION: ${{ inputs.app_version }}
+        run: |
+          if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf 'Version muss dem Format major.minor.build entsprechen, nur Zahlen sind erlaubt.\n' >&2
+            exit 2
+          fi
+          if [[ "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$APP_VERSION" ]]; then
+            printf 'APP_VERSION muss dem ausgewählten Git-Tag entsprechen.\n' >&2
+            exit 2
+          fi
+          printf 'APP_URL=%s\n' "$APP_URL" > .env
+          mkdir -p build
+          jq -n --arg version "$APP_VERSION" '{version: $version}' > build/version.json
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version '^2' --locked
 
       - name: Build desktop app
+        if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'windows'
         working-directory: app/bankiva-app
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/build/${{ matrix.platform }}
-        run: cargo tauri build --bundles ${{ matrix.platform == 'linux' && 'appimage' || matrix.platform == 'macos' && 'dmg' || 'nsis' }}
+        run: cargo tauri build --config ../../build/version.json --bundles ${{ matrix.platform == 'linux' && 'appimage' || matrix.platform == 'macos' && 'dmg' || 'nsis' }}
+
+      - name: Initialize Android project
+        if: matrix.platform == 'android'
+        working-directory: app/bankiva-app
+        run: cargo tauri android init --ci --config ../../build/version.json
+
+      - name: Build Android app
+        if: matrix.platform == 'android'
+        working-directory: app/bankiva-app
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/android
+        run: cargo tauri android build --apk --aab --config ../../build/version.json
+
+      - name: Initialize iOS project
+        if: matrix.platform == 'ios'
+        working-directory: app/bankiva-app
+        run: cargo tauri ios init --ci --config ../../build/version.json
+
+      - name: Build iOS simulator app
+        if: matrix.platform == 'ios'
+        working-directory: app/bankiva-app
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/build/ios
+        run: cargo tauri ios build --target aarch64-sim --ci --config ../../build/version.json
+
+      - name: Package iOS simulator app
+        if: matrix.platform == 'ios'
+        run: |
+          mkdir -p build/ios/artifact
+          app_path=$(find app/bankiva-app/src-tauri/gen/apple/build -type d -name '*.app' -path '*arm64-sim*' -print -quit)
+          test -n "$app_path"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" build/ios/artifact/bankiva-ios-simulator.zip
 
       - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'linux'
         with:
-          name: bankiva-${{ matrix.platform }}
-          path: build/${{ matrix.platform }}/release/bundle/${{ matrix.platform == 'linux' && 'appimage/*.AppImage' || matrix.platform == 'macos' && 'dmg/*.dmg' || 'nsis/*.exe' }}
+          name: bankiva-linux
+          path: build/linux/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'macos'
+        with:
+          name: bankiva-macos
+          path: build/macos/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'windows'
+        with:
+          name: bankiva-windows
+          path: build/windows/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'android'
+        with:
+          name: bankiva-android
+          path: |
+            app/bankiva-app/src-tauri/gen/android/app/build/outputs/**/*.apk
+            app/bankiva-app/src-tauri/gen/android/app/build/outputs/**/*.aab
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'ios'
+        with:
+          name: bankiva-ios-simulator
+          path: build/ios/artifact/bankiva-ios-simulator.zip
           if-no-files-found: error

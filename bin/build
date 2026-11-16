@@ -3,15 +3,18 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Startet den GitHub Actions Build für die angegebenen Betriebssysteme und lädt
+Startet den GitHub Actions Build für die angegebenen Plattformen und lädt
 die erzeugten Pakete nach install/<workflow-run-id>/ herunter.
 
 Aufruf:
-  bin/build.sh <windows|linux|macos> [<windows|linux|macos> ...]
+  bin/build all
+  bin/build <windows|linux|macos|android|ios> [...]
 
 Beispiele:
-  bin/build.sh linux
-  bin/build.sh windows macos
+  bin/build linux
+  bin/build windows macos
+  bin/build android ios
+  bin/build all
 EOF
 }
 
@@ -29,21 +32,24 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
 platforms=()
-for platform in "$@"; do
-  case "$platform" in
-    windows|linux|macos) ;;
-    *) printf 'Unbekanntes Betriebssystem: %s\n\n' "$platform" >&2; usage >&2; exit 2 ;;
+for requested_platform in "$@"; do
+  case "$requested_platform" in
+    all) requested_platforms=(windows linux macos android ios) ;;
+    windows|linux|macos|android|ios) requested_platforms=("$requested_platform") ;;
+    *) printf 'Unbekannte Plattform: %s\n\n' "$requested_platform" >&2; usage >&2; exit 2 ;;
   esac
-  already_selected=false
-  for selected_platform in "${platforms[@]}"; do
-    if [[ $selected_platform == "$platform" ]]; then
-      already_selected=true
-      break
+  for platform in "${requested_platforms[@]}"; do
+    already_selected=false
+    for selected_platform in "${platforms[@]}"; do
+      if [[ $selected_platform == "$platform" ]]; then
+        already_selected=true
+        break
+      fi
+    done
+    if [[ $already_selected == false ]]; then
+      platforms+=("$platform")
     fi
   done
-  if [[ $already_selected == false ]]; then
-    platforms+=("$platform")
-  fi
 done
 
 for command_name in gh git; do
@@ -52,6 +58,12 @@ for command_name in gh git; do
     exit 1
   fi
 done
+
+app_version=$(git describe --tags --exact-match HEAD 2>/dev/null || true)
+if [[ ! $app_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  printf 'HEAD benötigt ein Git-Tag im Format major.minor.build (zum Beispiel 0.1.1).\n' >&2
+  exit 1
+fi
 
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
   printf 'Keine gültige gh-Anmeldung. Bitte zuerst „gh auth login“ ausführen.\n' >&2
@@ -70,12 +82,6 @@ if [[ ! $app_url =~ ^https?://[^[:space:]]+$ ]]; then
   exit 1
 fi
 
-branch=$(git branch --show-current)
-if [[ -z $branch ]]; then
-  printf 'Kein Git-Branch ausgecheckt; der GitHub-Workflow benötigt einen Branch.\n' >&2
-  exit 1
-fi
-
 platforms_json='['
 for platform in "${platforms[@]}"; do
   [[ $platforms_json == '[' ]] || platforms_json+=','
@@ -84,13 +90,14 @@ done
 platforms_json+=']'
 
 request_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
-run_name="Tauri desktop build $request_id"
+run_name="Tauri app $app_version build $request_id"
 workflow_file='.github/workflows/tauri-desktop.yml'
 
 printf 'Starte GitHub Build für: %s\n' "${platforms[*]}"
 gh workflow run "$workflow_file" \
-  --ref "$branch" \
+  --ref "$app_version" \
   -f "app_url=$app_url" \
+  -f "app_version=$app_version" \
   -f "platforms=$platforms_json" \
   -f "request_id=$request_id"
 
