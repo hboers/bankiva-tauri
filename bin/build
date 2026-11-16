@@ -165,7 +165,7 @@ printf 'Build-Artefakte liegen in: %s\n' "$destination"
 
 if [[ $publish_desktop == true ]]; then
   remote_host='app4.bankiva.de'
-  remote_dir='/opt/bankiva/4/public/download'
+  remote_dir='/opt/bankiva/public/download'
   local_download_dir="$ROOT_DIR/../../4.0/public/download"
   declare -a desktop_artifacts=()
 
