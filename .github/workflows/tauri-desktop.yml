@@ -97,10 +97,6 @@ jobs:
         working-directory: app/bankiva-app
         run: cargo tauri android init --ci --config ../../build/version.json
 
-      - name: Configure Android camera access
-        if: matrix.platform == 'android'
-        run: python3 bin/configure-android-camera
-
       - name: Configure Android release signing
         if: matrix.platform == 'android'
         env:

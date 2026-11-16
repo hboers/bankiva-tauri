@@ -95,9 +95,9 @@ Auf macOS kann Base64 mit `base64 -i datei.p12` beziehungsweise `base64 -i profi
 
 Die iOS-IPA ist für echte iPhones und iPads über App Store Connect/TestFlight vorgesehen. Der Simulator-ZIP-Build bleibt zum Testen im Simulator. Google Play bzw. Apple können die Pakete nach dem Upload noch prüfen; der CI-Build selbst veröffentlicht nicht automatisch.
 
-### Kamera und Bild-Uploads
+### Bild-Uploads
 
-Die WebView erlaubt Kameraanfragen ausschließlich von der in `APP_URL` eingebetteten Bankiva-Origin. iOS und macOS erhalten die erforderlichen Kamera-/Fotomediathek-Texte über `src-tauri/Info.plist`; Android ergänzt `bin/configure-android-camera` nach der Tauri-Initialisierung um die Kamera-Berechtigung. In den Bankiva-Dateiablagen ergänzt die App einen „Foto aufnehmen“-Knopf, der auf Mobilgeräten die Rückkamera öffnet und das Foto zur normalen Dateiauswahl hinzufügt. Der bestehende Kamera-Knopf bei Verlustmeldungen bleibt zuständig. Am Desktop bleiben Dateiauswahl und Webseitenzugriff auf angeschlossene Kameras verfügbar.
+Die Tauri-App verwendet die Tauri-Standardbehandlung für Berechtigungsanfragen der geladenen Webseite. Es sind keine zusätzlichen `Info.plist`-Einträge, Entitlements oder Android-Berechtigungen konfiguriert.
 
 Nach dem Laden der Bankiva-Seite komprimiert die App große Bilddateien in der WebView vor dem Absenden: maximal 2000 Pixel Kantenlänge und JPEG-Qualität 78 %. Kleine Bilder bleiben unverändert. Die Komprimierung gilt für Bilddateien in Datei-Upload-Feldern, etwa bei Verlustmeldungen und Dokumenten; andere Dateien wie PDFs werden unverändert übertragen. Browser/WebView-Kompatibilität und tatsächliche Upload-Validierung müssen auf den Zielgeräten geprüft werden.
 
