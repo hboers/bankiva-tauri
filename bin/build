@@ -3,10 +3,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Startet den GitHub Actions Build für die angegebenen Plattformen und lädt
-die erzeugten Pakete nach install/<workflow-run-id>/ herunter. `desktop`
-baut Windows, Linux sowie macOS für Apple Silicon und Intel und kopiert die
-Pakete nach app4.bankiva.de.
+Startet den GitHub Actions Build für die angegebenen Plattformen. Desktop-
+Pakete werden über install/<workflow-run-id>/ nach 4.0/public/download
+verschoben. Anschließend wird das temporäre Verzeichnis entfernt. Eine
+Übertragung auf den Anwendungsserver erfolgt nicht. `desktop` baut Windows,
+Linux sowie macOS für Apple Silicon und Intel.
 
 Mobile Builds benötigen GitHub Actions Secrets:
   Android: ANDROID_KEY_BASE64, ANDROID_KEY_PASSWORD, ANDROID_KEY_ALIAS
@@ -45,12 +46,15 @@ platforms=()
 publish_desktop=false
 for requested_platform in "$@"; do
   case "$requested_platform" in
-    all) requested_platforms=(windows linux macos macos-intel android ios) ;;
+    all) requested_platforms=(windows linux macos macos-intel android ios); publish_desktop=true ;;
     desktop) requested_platforms=(windows linux macos macos-intel); publish_desktop=true ;;
     windows|linux|macos|macos-intel|android|ios) requested_platforms=("$requested_platform") ;;
     *) printf 'Unbekannte Plattform: %s\n\n' "$requested_platform" >&2; usage >&2; exit 2 ;;
   esac
   for platform in "${requested_platforms[@]}"; do
+    case "$platform" in
+      windows|linux|macos|macos-intel) publish_desktop=true ;;
+    esac
     already_selected=false
     for selected_platform in "${platforms[@]}"; do
       if [[ $selected_platform == "$platform" ]]; then
@@ -65,9 +69,6 @@ for requested_platform in "$@"; do
 done
 
 required_commands=(gh git)
-if [[ $publish_desktop == true ]]; then
-  required_commands+=(ssh scp)
-fi
 for command_name in "${required_commands[@]}"; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     printf 'Benötigtes Programm nicht gefunden: %s\n' "$command_name" >&2
@@ -164,12 +165,19 @@ done
 printf 'Build-Artefakte liegen in: %s\n' "$destination"
 
 if [[ $publish_desktop == true ]]; then
-  remote_host='app4.bankiva.de'
-  remote_dir='/opt/bankiva/public/download'
   local_download_dir="$ROOT_DIR/../../4.0/public/download"
-  declare -a desktop_artifacts=()
+  declare -a desktop_specs=() desktop_artifacts=()
 
-  for spec in 'linux:*.AppImage' 'macos:bankiva-app_*_aarch64.dmg' 'macos-intel:bankiva-app_*_x64.dmg' 'windows:*.exe'; do
+  for platform in "${platforms[@]}"; do
+    case "$platform" in
+      linux) desktop_specs+=('linux:*.AppImage') ;;
+      macos) desktop_specs+=('macos:bankiva-app_*_aarch64.dmg') ;;
+      macos-intel) desktop_specs+=('macos-intel:bankiva-app_*_x64.dmg') ;;
+      windows) desktop_specs+=('windows:*.msi') ;;
+    esac
+  done
+
+  for spec in "${desktop_specs[@]}"; do
     platform=${spec%%:*}
     pattern=${spec#*:}
     mapfile -t matches < <(find "$destination" -type f -name "$pattern" -print | sort)
@@ -202,42 +210,23 @@ if [[ $publish_desktop == true ]]; then
     fi
   done
 
-  remote_check="set -eu; printf 'Zielhost: '; hostname -f; printf 'Zielpfad: '; realpath -e '$remote_dir'; test -d '$remote_dir'; test -w '$remote_dir';"
-  for artifact in "${desktop_artifacts[@]}"; do
+  printf 'Verschiebe Pakete lokal nach %s …\n' "$local_download_dir"
+  for index in "${!desktop_artifacts[@]}"; do
+    artifact=${desktop_artifacts[$index]}
     filename=${artifact##*/}
-    remote_check+=" test ! -e '$remote_dir/$filename';"
-  done
-
-  printf 'Prüfe SSH-Ziel %s:%s …\n' "$remote_host" "$remote_dir"
-  ssh -F /dev/null -o BatchMode=yes "$remote_host" "$remote_check"
-
-  printf 'Kopiere Pakete lokal nach %s …\n' "$local_download_dir"
-  for artifact in "${desktop_artifacts[@]}"; do
-    filename=${artifact##*/}
-    cp -p -- "$artifact" "$local_download_dir/$filename"
-    if ! cmp -s -- "$artifact" "$local_download_dir/$filename"; then
-      printf 'Lokale Kopie stimmt nicht mit dem Build-Artefakt überein: %s\n' "$filename" >&2
+    mv -- "$artifact" "$local_download_dir/$filename"
+    if [[ ! -s "$local_download_dir/$filename" || -e "$artifact" ]]; then
+      printf 'Build-Artefakt wurde nicht korrekt nach public/download verschoben: %s\n' "$filename" >&2
       exit 1
     fi
+    desktop_artifacts[$index]="$local_download_dir/$filename"
   done
 
-  printf 'Kopiere Windows-, Linux-, Apple-Silicon- und Intel-macOS-Pakete remote nach %s:%s …\n' "$remote_host" "$remote_dir"
-  scp -F /dev/null -p "${desktop_artifacts[@]}" "$remote_host:$remote_dir/"
-
-  printf 'Prüfe hochgeladene Pakete …\n'
   for artifact in "${desktop_artifacts[@]}"; do
     filename=${artifact##*/}
-    local_sha=$(sha256sum "$local_download_dir/$filename" | awk '{print $1}')
-    remote_sha=$(ssh -F /dev/null -o BatchMode=yes "$remote_host" "test -s '$remote_dir/$filename' && sha256sum '$remote_dir/$filename' | cut -d ' ' -f 1")
-    if [[ $local_sha != "$remote_sha" ]]; then
-      printf 'Remote-Kopie stimmt nicht mit der lokalen Datei überein: %s\n' "$filename" >&2
-      exit 1
-    fi
+    test -s "$local_download_dir/$filename"
     printf '  %s\n' "$filename"
   done
-
-  printf 'Entferne erfolgreich kopierte Build-Artefakte aus %s …\n' "$destination"
-  rm -- "${desktop_artifacts[@]}"
 
   classify_download() {
     local filename="$1"
@@ -263,6 +252,12 @@ if [[ $publish_desktop == true ]]; then
           DOWNLOAD_VERSION=${BASH_REMATCH[1]}
         fi
         ;;
+      bankiva-app_*.msi)
+        if [[ $filename =~ ^bankiva-app_([0-9]+\.[0-9]+\.[0-9]+)_x64(_[A-Za-z0-9-]+)?\.msi$ ]]; then
+          DOWNLOAD_PLATFORM='windows'
+          DOWNLOAD_VERSION=${BASH_REMATCH[1]}
+        fi
+        ;;
       bankiva-app_*-setup.exe)
         if [[ $filename =~ ^bankiva-app_([0-9]+\.[0-9]+\.[0-9]+)_[A-Za-z0-9_-]+-setup\.exe$ ]]; then
           DOWNLOAD_PLATFORM='windows'
@@ -280,7 +275,7 @@ if [[ $publish_desktop == true ]]; then
       && $(printf '%s\n%s\n' "$version" "$app_version" | sort -V | head -n 1) == "$version" ]]
   }
 
-  declare -a stale_local_files=() stale_remote_files=()
+  declare -a stale_local_files=()
   shopt -s nullglob
   local_candidates=("$local_download_dir"/*)
   shopt -u nullglob
@@ -292,41 +287,16 @@ if [[ $publish_desktop == true ]]; then
     fi
   done
 
-  remote_files=$(ssh -F /dev/null -o BatchMode=yes "$remote_host" \
-    "find '$remote_dir' -maxdepth 1 -type f -printf '%f\\n'")
-  while IFS= read -r remote_file; do
-    [[ -n $remote_file ]] || continue
-    if classify_download "$remote_file" && is_older_version "$DOWNLOAD_VERSION"; then
-      stale_remote_files+=("$remote_file")
-    fi
-  done <<< "$remote_files"
-
-  if ((${#stale_local_files[@]} || ${#stale_remote_files[@]})); then
-    backup_dir="$destination/previous-downloads"
-    mkdir -p "$backup_dir/local" "$backup_dir/remote"
+  if (( ${#stale_local_files[@]} )); then
+    backup_dir="$ROOT_DIR/archive/previous-downloads/$run_id"
+    mkdir -p "$backup_dir"
     printf 'Sichere ältere Installer vor dem Entfernen in %s …\n' "$backup_dir"
     for path in "${stale_local_files[@]}"; do
       filename=${path##*/}
-      cp -p -- "$path" "$backup_dir/local/$filename"
-      cmp -s -- "$path" "$backup_dir/local/$filename"
-    done
-    for filename in "${stale_remote_files[@]}"; do
-      scp -F /dev/null -p "$remote_host:$remote_dir/$filename" "$backup_dir/remote/"
-      remote_sha=$(ssh -F /dev/null -o BatchMode=yes "$remote_host" \
-        "sha256sum '$remote_dir/$filename' | cut -d ' ' -f 1")
-      local_sha=$(sha256sum "$backup_dir/remote/$filename" | cut -d ' ' -f 1)
-      if [[ $remote_sha != "$local_sha" ]]; then
-        printf 'Sicherung stimmt nicht überein; ältere Datei bleibt erhalten: %s\n' "$filename" >&2
-        exit 1
-      fi
+      cp -p -- "$path" "$backup_dir/$filename"
+      cmp -s -- "$path" "$backup_dir/$filename"
     done
 
-    printf 'Entferne ältere Pakete derselben Plattform aus dem Remote-Verzeichnis …\n'
-    for filename in "${stale_remote_files[@]}"; do
-      ssh -F /dev/null -o BatchMode=yes "$remote_host" "rm -- '$remote_dir/$filename'"
-      ssh -F /dev/null -o BatchMode=yes "$remote_host" "test ! -e '$remote_dir/$filename'"
-      printf '  %s\n' "$filename"
-    done
     printf 'Entferne ältere Pakete derselben Plattform aus dem lokalen Download-Verzeichnis …\n'
     for path in "${stale_local_files[@]}"; do
       rm -- "$path"
@@ -335,6 +305,13 @@ if [[ $publish_desktop == true ]]; then
     done
   else
     printf 'Keine älteren Tauri-Desktop-Pakete zum Entfernen gefunden.\n'
+  fi
+
+  printf 'Entferne das Build-Verzeichnis %s …\n' "$destination"
+  rm -rf -- "$destination"
+  if [[ -e $destination ]]; then
+    printf 'Build-Verzeichnis konnte nicht entfernt werden: %s\n' "$destination" >&2
+    exit 1
   fi
 
 fi

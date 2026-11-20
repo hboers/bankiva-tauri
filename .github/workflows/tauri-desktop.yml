@@ -85,12 +85,73 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version '^2' --locked
 
+      - name: Import Apple Developer ID certificate and require notarization credentials
+        if: matrix.platform == 'macos' || matrix.platform == 'macos-intel'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              printf 'Missing required GitHub Actions secret: %s\n' "$name" >&2
+              exit 1
+            fi
+          done
+
+          certificate_path="$RUNNER_TEMP/bankiva-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/bankiva-build.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security default-keychain -s "$keychain_path"
+
+          signing_identity=$(security find-identity -v -p codesigning "$keychain_path" \
+            | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -n 1)
+          if [[ -z "$signing_identity" ]]; then
+            printf 'The certificate must be a valid Developer ID Application identity.\n' >&2
+            exit 1
+          fi
+          printf 'APPLE_SIGNING_IDENTITY=%s\n' "$signing_identity" >> "$GITHUB_ENV"
+
       - name: Build desktop app
         if: matrix.platform == 'linux' || matrix.platform == 'macos' || matrix.platform == 'macos-intel' || matrix.platform == 'windows'
         working-directory: app/bankiva-app
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/build/${{ matrix.platform }}
-        run: cargo tauri build --config ../../build/version.json --bundles ${{ matrix.platform == 'linux' && 'appimage' || (matrix.platform == 'macos' || matrix.platform == 'macos-intel') && 'dmg' || 'nsis' }} ${{ matrix.platform == 'macos-intel' && '--target x86_64-apple-darwin' || '' }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: cargo tauri build --config ../../build/version.json --bundles ${{ matrix.platform == 'linux' && 'appimage' || (matrix.platform == 'macos' || matrix.platform == 'macos-intel') && 'dmg' || 'msi' }} ${{ matrix.platform == 'macos-intel' && '--target x86_64-apple-darwin' || '' }}
+
+      - name: Verify signed and notarized macOS app
+        if: matrix.platform == 'macos' || matrix.platform == 'macos-intel'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.platform }}" == 'macos-intel' ]]; then
+            app_path='build/macos-intel/x86_64-apple-darwin/release/bundle/macos/bankiva-app.app'
+          else
+            app_path='build/macos/release/bundle/macos/bankiva-app.app'
+          fi
+          test -d "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
+          xcrun stapler validate "$app_path"
 
       - name: Initialize Android project
         if: matrix.platform == 'android'
@@ -198,7 +259,7 @@ jobs:
         if: matrix.platform == 'windows'
         with:
           name: bankiva-windows
-          path: build/windows/release/bundle/nsis/*.exe
+          path: build/windows/release/bundle/msi/*.msi
           if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
